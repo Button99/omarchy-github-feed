@@ -1,0 +1,24 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/feed-model.test.cjs
+      - run: bash -n install.sh
+      - name: Check plugin entry point
+        run: |
+          node - <<'JS'
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+          if (manifest.schemaVersion !== 1 || !manifest.kinds.includes('bar-widget')) process.exit(1);
+          for (const entry of Object.values(manifest.entryPoints)) {
+            if (entry.startsWith('/') || entry.includes('..') || !fs.existsSync(entry)) process.exit(1);
+          }
+          JS

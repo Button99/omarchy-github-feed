@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "christos.github-feed",
+  "name": "GitHub Feed",
+  "version": "0.1.0",
+  "author": "Christos Koumpis",
+  "description": "Read your GitHub activity feed from the Omarchy bar",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "GitHub Feed",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": { "limit": 10, "repo": "" }
+  }
+}
