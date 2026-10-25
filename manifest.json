@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "christos.github-feed",
+  "id": "github.feed",
   "name": "GitHub Feed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Christos Koumpis",
-  "description": "Read your GitHub activity feed from the Omarchy bar",
+  "description": "Native GitHub activity feed for the Omarchy bar, with local caching",
   "kinds": ["bar-widget"],
   "entryPoints": { "barWidget": "BarWidget.qml" },
   "barWidget": {
@@ -12,6 +12,6 @@
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "right",
-    "defaults": { "limit": 10, "repo": "" }
+    "defaults": { "limit": 10, "repo": "", "username": "" }
   }
 }

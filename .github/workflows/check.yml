@@ -10,7 +10,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test tests/feed-model.test.cjs
+      - run: node --test tests/*.test.cjs
       - run: bash -n install.sh
       - name: Check plugin entry point
         run: |

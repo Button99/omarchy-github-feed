@@ -7,10 +7,11 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui as Ui
 import "FeedModel.js" as Feed
+import "FeedClient.js" as Client
 
 Ui.Panel {
     id: root
-    moduleName: "christos.github-feed"
+    moduleName: "github.feed"
     manageIpc: false
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
@@ -19,66 +20,179 @@ Ui.Panel {
     property string error: ""
     property string lastUpdated: ""
     property string feedSource: "live"
-    property double lastAttempt: 0
+    property double nextAllowedAt: 0
+    property double savedAt: 0
     property bool busy: false
     property int displayLimit: Number(setting("limit", 10))
     property string repository: String(setting("repo", ""))
+    property string username: String(setting("username", ""))
+    property string fileToken: ""
+    readonly property string token: String(Quickshell.env("GH_TOKEN") || Quickshell.env("GITHUB_TOKEN") || fileToken).trim()
+    readonly property string cacheKey: Feed.identity(token, username)
+    readonly property string cacheDirectory: (Quickshell.env("XDG_CACHE_HOME") || Quickshell.env("HOME") + "/.cache") + "/omarchy-github-feed"
+    property bool cacheInitialized: false
+    property bool cacheEnabled: false
+    property bool cacheLoaded: false
+    property bool pendingRefresh: false
+    property bool pendingForce: false
+    property var cancelRequest: null
     readonly property var shownEvents: Feed.select(events, repository, displayLimit)
     readonly property color ink: Commons.Color.foreground
 
+    onCacheKeyChanged: {
+        if (cancelRequest) cancelRequest()
+        watchdog.stop()
+        busy = false
+        events = []
+        savedAt = 0
+        lastUpdated = ""
+        error = ""
+        nextAllowedAt = 0
+        cacheLoaded = false
+        if (opened) {
+            pendingRefresh = true
+            pendingForce = false
+            if (cacheInitialized && !cacheEnabled) refresh(false)
+        }
+    }
+
     function open() {
         controller.show()
-        if (!lastAttempt || Date.now() - lastAttempt >= 60000) refresh()
+        refresh(false)
+    }
+
+    function restoreCache(text) {
+        var cached = Feed.readCache(text, cacheKey, Date.now())
+        if (cached && cached.savedAt > savedAt) {
+            events = cached.events
+            savedAt = cached.savedAt
+            nextAllowedAt = Math.max(nextAllowedAt, cached.nextAllowedAt)
+            lastUpdated = Qt.formatDateTime(new Date(savedAt), "d MMM HH:mm")
+            feedSource = "cache"
+        }
+        cacheLoaded = true
+        if (pendingRefresh) {
+            var force = pendingForce
+            pendingRefresh = false
+            Qt.callLater(function() { root.refresh(force) })
+        }
     }
 
     function refresh(force) {
         if (busy) return
-        var remaining = 60000 - (Date.now() - lastAttempt)
-        if (remaining > 0) {
-            error = "Please wait " + Math.ceil(remaining / 1000) + " seconds before refreshing."
+        if (!cacheKey) {
+            error = "Enter your GitHub username for public activity, or put a token in " + credentials.path
+            return
+        }
+        if (!cacheInitialized || (cacheEnabled && !cacheLoaded)) {
+            pendingRefresh = true
+            pendingForce = !!force
+            return
+        }
+        if (!force && savedAt && Date.now() - savedAt < 300000) {
+            feedSource = "cache"
+            return
+        }
+        if (Date.now() < nextAllowedAt) {
+            if (force) error = "Please wait " + Math.ceil((nextAllowedAt - Date.now()) / 1000) + " seconds before refreshing."
             return
         }
         error = ""
         busy = true
-        lastAttempt = Date.now()
-        fetcher.command = [String(setting("command", decodeURIComponent(String(Qt.resolvedUrl("bin/github-feed")).replace(/^file:\/\//, "")))),
-                           "check", "--limit", "300"].concat(force ? ["--refresh"] : [])
-        fetcher.running = true
+        nextAllowedAt = Date.now() + 60000
         watchdog.restart()
-    }
-
-    Process {
-        id: fetcher
-        stdout: StdioCollector { id: output; waitForEnd: true }
-        stderr: StdioCollector { id: errors; waitForEnd: true }
-        onExited: function(code) {
+        var activeKey = cacheKey
+        cancelRequest = Client.create(request, Feed.normalize).fetch(token, username, function(problem, result) {
+            if (activeKey !== root.cacheKey) return
             watchdog.stop()
             root.busy = false
-            if (code !== 0) {
-                root.error = String(errors.text || "Could not retrieve the feed. Check gh auth login and your network.").slice(0, 700)
+            root.nextAllowedAt = Math.max(root.nextAllowedAt, result.nextAllowedAt)
+            if (problem) {
+                root.error = problem
+                root.feedSource = "stale"
                 return
             }
-            try {
-                root.events = Feed.parse(output.text)
-                var status = Feed.cacheStatus(errors.text)
-                root.feedSource = status.source
-                root.lastUpdated = Qt.formatDateTime(new Date(status.savedAt), "d MMM HH:mm")
-                root.error = status.warning.slice(0, 700)
-            } catch (exception) {
-                root.error = exception.message
+            root.events = result.events
+            root.savedAt = Date.now()
+            root.lastUpdated = Qt.formatDateTime(new Date(root.savedAt), "d MMM HH:mm")
+            root.feedSource = "live"
+            if (root.cacheEnabled) cacheFile.setText(JSON.stringify({ version: 1, key: activeKey,
+                savedAt: root.savedAt, nextAllowedAt: root.nextAllowedAt, events: root.events }))
+        })
+    }
+
+    // Only GitHub's fixed HTTPS origin is used, including for pagination.
+    function request(path, accessToken, callback) {
+        var xhr = new XMLHttpRequest()
+        var finished = false
+        xhr.onreadystatechange = function() {
+            if (finished || xhr.readyState !== XMLHttpRequest.DONE) return
+            finished = true
+            callback({ status: xhr.status, body: xhr.responseText,
+                pollInterval: xhr.getResponseHeader("X-Poll-Interval"),
+                retryAfter: xhr.getResponseHeader("Retry-After"),
+                rateReset: xhr.getResponseHeader("X-RateLimit-Reset") })
+        }
+        xhr.open("GET", "https://api.github.com/" + path)
+        xhr.setRequestHeader("User-Agent", "omarchy-github-feed/0.2.0")
+        xhr.setRequestHeader("Accept", "application/vnd.github+json")
+        xhr.setRequestHeader("X-GitHub-Api-Version", "2022-11-28")
+        if (accessToken) xhr.setRequestHeader("Authorization", "Bearer " + accessToken)
+        xhr.send()
+        return function() { finished = true; xhr.abort() }
+    }
+
+    FileView {
+        id: credentials
+        path: String(root.setting("tokenFile", (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omarchy/github-feed-token"))
+        watchChanges: true
+        printErrors: false
+        onLoaded: root.fileToken = text().trim()
+        onLoadFailed: root.fileToken = ""
+        onFileChanged: reload()
+    }
+
+    // This subprocess only secures the cache directory. All network requests
+    // and JSON processing are performed by this plugin, without external tools.
+    Process {
+        id: cacheSetup
+        command: ["/bin/sh", "-c", 'umask 077; mkdir -p -- "$1" && chmod 700 -- "$1"', "github-feed-cache", root.cacheDirectory]
+        running: true
+        onExited: function(code) {
+            root.cacheEnabled = code === 0
+            root.cacheInitialized = true
+            if (!root.cacheEnabled) {
+                root.cacheLoaded = true
+                if (root.pendingRefresh) {
+                    var force = root.pendingForce
+                    root.pendingRefresh = false
+                    root.refresh(force)
+                }
             }
         }
+    }
+
+    FileView {
+        id: cacheFile
+        path: root.cacheEnabled && root.cacheKey ? root.cacheDirectory + "/" + root.cacheKey + ".json" : ""
+        atomicWrites: true
+        printErrors: false
+        onLoaded: root.restoreCache(text())
+        onLoadFailed: root.restoreCache("")
+        onSaveFailed: root.error = "Activity loaded, but the disk cache could not be saved."
     }
 
     Timer {
         id: watchdog
         interval: 30000
         onTriggered: {
-            fetcher.running = false
+            if (root.cancelRequest) root.cancelRequest()
             root.busy = false
             root.error = "Request timed out. Check your connection and try again."
+            root.feedSource = "stale"
         }
     }
+    Component.onDestruction: if (cancelRequest) cancelRequest()
 
     Ui.BarIconButton {
         id: button
@@ -140,6 +254,15 @@ Ui.Panel {
                     Layout.fillWidth: true
                 }
 
+                Ui.TextField {
+                    Layout.fillWidth: true
+                    visible: !root.token
+                    placeholderText: "GitHub username (public activity)"
+                    text: root.username
+                    onAccepted: { root.username = text.trim(); root.refresh(false) }
+                    Keys.onEscapePressed: root.close()
+                }
+
                 RowLayout {
                     Layout.fillWidth: true
                     Ui.TextField {
@@ -183,6 +306,7 @@ Ui.Panel {
                     delegate: Ui.Button {
                         required property var modelData
                         width: list.width
+                        clip: true
                         text: modelData.actor + " · " + Feed.action(modelData.type) + "\n"
                               + modelData.repo + " · " + modelData.time.replace("T", " ").replace("Z", " UTC")
                         leftAlign: true

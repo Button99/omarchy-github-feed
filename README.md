@@ -1,75 +1,99 @@
 # GitHub Feed for Omarchy
 
-A native Omarchy shell bar widget that uses the separate `github-feed` Rust CLI to display your received GitHub activity.
+A self-contained Omarchy bar widget that retrieves GitHub activity directly using Qt's HTTP client. No Rust executable, Cargo, GitHub CLI, or separate backend is required.
 
 ## Install
 
-Requires the Quickshell-based Omarchy shell with plugin support, Rust/Cargo, and GitHub CLI. This does not target older Waybar-based Omarchy versions.
+Requires the Quickshell-based Omarchy shell with plugin support. Older Waybar-based Omarchy versions are not supported.
 
-Clone both repositories next to each other, then run the installer:
+Using Omarchy's plugin manager:
 
 ```bash
-gh auth login --hostname github.com
-git clone https://github.com/Button99/github-feed.git
+omarchy plugin add https://github.com/Button99/omarchy-github-feed.git --enable
+```
+
+Or install from a local checkout:
+
+```bash
 git clone https://github.com/Button99/omarchy-github-feed.git
 cd omarchy-github-feed
 ./install.sh
 ```
 
-By default, the installer builds the CLI from `../github-feed`. Set `GITHUB_FEED_PROJECT=/absolute/path/to/github-feed` to use another checkout.
+The local installer validates and copies the plugin, backs up an existing installation, and enables the widget. Nothing is compiled. Update through `omarchy plugin update github.feed` for a plugin-manager installation; for a manually copied installation, pull this repository and rerun `./install.sh`.
 
-The installer builds the Rust executable, validates the plugin manifest, copies the plugin and binary into `~/.config/omarchy/plugins/christos.github-feed/`, and enables it in the bar. Existing plugin files are backed up before replacement. Stock Omarchy files are never edited.
+When upgrading from the original plugin ID, replace the existing feed entry's `id` in `shell.json` with `github.feed` and install this version. Keep the other entry settings to preserve your username, filter, and limit. Remove the old ID from the enabled layout to avoid a duplicate widget. Existing token files and cached activity remain compatible.
 
-To update, pull both checkouts and rerun the installer. This first release uses the build-and-install flow above; `omarchy plugin add` alone does not build the Rust backend.
+## Choose your feed
+
+**Public activity:** click the GitHub icon, enter your GitHub username, and press Enter. No token is required. To remember the username across shell restarts, set `username` in the widget settings below.
+
+**Authenticated activity:** put a GitHub token in a file readable only by your user. The default path is `~/.config/omarchy/github-feed-token`. Create and open it using:
+
+```bash
+touch ~/.config/omarchy/github-feed-token
+chmod 600 ~/.config/omarchy/github-feed-token
+${EDITOR:-nano} ~/.config/omarchy/github-feed-token
+```
+
+Save only the token text. The widget watches the file and switches to the authenticated user's received feed. Fine-grained tokens can read the received-events endpoint without additional endpoint permissions; private activity availability still depends on the token's access and organization policies. See the [GitHub Events API](https://docs.github.com/en/rest/activity/events#list-events-received-by-the-authenticated-user).
+
+Alternatively, the desktop shell can provide `GH_TOKEN` or `GITHUB_TOKEN`. Environment credentials take precedence over the token file. An export in a terminal does not change the environment of an already-running desktop shell.
+
+Tokens are used in HTTP authorization headers and never copied into cache files or widget settings. This plugin does not read GitHub CLI credentials.
 
 ## Use
 
 - Click the GitHub icon to open or close the feed.
 - Choose **10**, **20**, or **50** displayed events.
-- Type an exact `owner/repo` to filter locally, ignoring case; clear the field for all repositories.
+- Type an exact `owner/repo` to filter locally, ignoring case; clear it for all repositories.
 - Click an event to open its repository in your browser.
 - Click **Refresh**, or middle-click the icon, to fetch again.
 - Press **Escape** or click outside the popup to dismiss it.
 
-The widget loads up to 300 available events through `github-feed check --limit 300`. Changing filters or display count makes no network requests. Opening the popup checks the CLI cache if at least a minute has passed since the previous attempt. There is no background poller. Requests time out after 30 seconds, refreshes are limited to once per minute per widget instance, and failed refreshes retain the last successful results.
+The plugin requests up to three 100-event pages directly from `https://api.github.com`. It deduplicates event IDs and preserves feed order. Filters and display limits make no network requests. Unknown event types remain displayable.
 
-GitHub's received-events stream does not reproduce every recommendation on the website's feed. Activity may be delayed, and history is bounded by GitHub's API. Event descriptions are intentionally general where the CLI does not expose payload details.
+GitHub's received-events stream does not reproduce every recommendation on the website. Activity can be delayed, and the available history is bounded by GitHub's API.
+
+## Caching
+
+Successful results are saved atomically under `${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-github-feed/`. The plugin prepares this directory with mode `0700`; that filesystem setup is its only subprocess. All HTTP requests, JSON parsing, pagination, and cache contents are handled within the plugin.
+
+Snapshots are separate for each public username or token fingerprint. Tokens themselves are not saved. The plugin restores snapshots after a shell restart, reuses them for five minutes, and retains the original save time if a refresh fails. Empty successful feeds also replace older snapshots. Partial or malformed responses never replace good data.
+
+Refresh bypasses the five-minute cache while respecting a minimum one-minute interval and GitHub's polling/retry guidance. Requests have a 30-second overall timeout. There is no background poller. Failed cache-directory setup leaves an in-memory feed available; failed writes show an error.
+
+The old Rust CLI cache is independent and is not imported. Remove this plugin's cache directory to clear its saved activity.
 
 ## Settings
 
-Settings live inline on the widget entry in `~/.config/omarchy/shell.json`, under `bar.layout.right` (or wherever you move it):
+Settings live inline on the widget entry in `~/.config/omarchy/shell.json`, under `bar.layout.right` or wherever you place it:
 
 ```json
 {
-  "id": "christos.github-feed",
+  "id": "github.feed",
+  "username": "Button99",
   "limit": 10,
-  "repo": "",
-  "command": "/absolute/path/to/github-feed"
+  "repo": ""
 }
 ```
 
-`command` is optional; the default is the installed `bin/github-feed`. It must be an executable path, not a shell command with flags. The widget passes arguments directly, without invoking a shell. UI filter/count changes last for the current shell session; edit the entry to set startup defaults.
-
-The GitHub CLI login must be available to the desktop shell's user. No token is stored in the plugin, and no additional login flow is introduced. The Rust CLI saves the complete fetched snapshot under `${XDG_CACHE_HOME:-~/.cache}/github-feed/github.com-ACCOUNT.tsv`, with private file permissions and atomic replacement. Snapshots are reused for five minutes and are shared between CLI and plugin. The Refresh button bypasses the activity cache. Failed activity fetches fall back to the saved snapshot and display a warning with its original timestamp.
-
-Account identity is resolved first using `gh api user --cache 24h`. Offline fallback requires that identity lookup to succeed (including through gh's HTTP cache); a new login or expired identity cache may still need a connection. Logging out does not erase saved files. Remove the `github-feed` cache directory to clear saved activity.
+`tokenFile` optionally overrides the credential-file path. UI username/filter/count changes last for the current shell session; configure the entry above for startup defaults. The previous `command` setting is no longer used.
 
 Disable the widget:
 
 ```bash
-omarchy plugin disable christos.github-feed
+omarchy plugin disable github.feed
 ```
 
-## Development checks
-
-From the `omarchy-github-feed` folder:
+## Development
 
 ```bash
-node --test tests/feed-model.test.cjs
+node --test tests/*.test.cjs
 omarchy plugin validate .
 bash -n install.sh
 ```
 
-The JavaScript tests cover parsing, display limits, repository filtering, unknown event types, and browser URL validation. Rust tests cover CLI behavior using a fake `gh` executable.
+Tests inject HTTP responses to cover public/authenticated requests, pagination, cancellation, rate limits, invalid responses, filtering, cache validation, URL validation, and credential fingerprints. They require no credentials or network connection.
 
-The plugin's data handling was also loaded with a mock feed under a headless QML harness. Its layer-shell popup still needs visual verification in a live Omarchy session; headless Qt cannot provide the Wayland panel backend.
+QML startup and disk-cache reuse are also checked under a headless harness with a mocked transport. The layer-shell popup still needs visual verification in a live Omarchy session because headless Qt cannot supply the Wayland panel backend.
