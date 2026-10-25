@@ -2,6 +2,15 @@
 
 A self-contained Omarchy bar widget that retrieves GitHub activity directly using Qt's HTTP client. No Rust executable, Cargo, GitHub CLI, or separate backend is required.
 
+![GitHub Feed popup with repository filtering and activity display controls](preview.png)
+
+*Rendered QML preview with sample activity. Colors follow your Omarchy theme.*
+
+- Public feeds by username, with optional token authentication.
+- Display 10, 20, or 50 events and filter by repository.
+- Five-minute persistent cache with saved activity available when requests fail.
+- Direct GitHub requests with pagination, rate-limit handling, and a manual refresh.
+
 ## Install
 
 Requires the Quickshell-based Omarchy shell with plugin support. Older Waybar-based Omarchy versions are not supported.
@@ -20,7 +29,7 @@ cd omarchy-github-feed
 ./install.sh
 ```
 
-The local installer validates and copies the plugin, backs up an existing installation, and enables the widget. Nothing is compiled. Update through `omarchy plugin update github.feed` for a plugin-manager installation; for a manually copied installation, pull this repository and rerun `./install.sh`.
+The local installer validates and copies the plugin, backs up an existing installation in a hidden directory excluded from plugin discovery, and enables the widget. Nothing is compiled. Update through `omarchy plugin update github.feed` for a plugin-manager installation; for a manually copied installation, pull this repository and rerun `./install.sh`.
 
 When upgrading from the original plugin ID, replace the existing feed entry's `id` in `shell.json` with `github.feed` and install this version. Keep the other entry settings to preserve your username, filter, and limit. Remove the old ID from the enabled layout to avoid a duplicate widget. Existing token files and cached activity remain compatible.
 
@@ -86,6 +95,16 @@ Disable the widget:
 omarchy plugin disable github.feed
 ```
 
+## Removal
+
+Remove the widget using Omarchy's plugin manager:
+
+```bash
+omarchy plugin remove github.feed
+```
+
+Omarchy disables and unloads the widget before removing its installation. This does not delete your separately stored token file or activity cache. If you no longer need them, remove the token file and `${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-github-feed/` separately. No system packages or services are installed by this plugin.
+
 ## Development
 
 ```bash
@@ -97,3 +116,7 @@ bash -n install.sh
 Tests inject HTTP responses to cover public/authenticated requests, pagination, cancellation, rate limits, invalid responses, filtering, cache validation, URL validation, and credential fingerprints. They require no credentials or network connection.
 
 QML startup and disk-cache reuse are also checked under a headless harness with a mocked transport. The layer-shell popup still needs visual verification in a live Omarchy session because headless Qt cannot supply the Wayland panel backend.
+
+## License
+
+[MIT](LICENSE) © 2026 Christos Koumpis.
